@@ -1,0 +1,63 @@
+name: Build Windows (MinGW64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master, main ]
+  pull_request:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSYS2 and MinGW-w64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-qt5
+            mingw-w64-x86_64-boost
+            mingw-w64-x86_64-libjpeg-turbo
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-libtiff
+            mingw-w64-x86_64-zlib
+
+      - name: Fix legacy target name in CopyToBuildDir.cmake
+        run: |
+          sed -i 's/TARGET_FILE_DIR:scantailor/TARGET_FILE_DIR:scantailor-advanced/g' cmake/CopyToBuildDir.cmake
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G "Ninja" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTS=OFF \
+            -DCMAKE_INSTALL_PREFIX=dist
+
+      - name: Build project
+        run: |
+          cmake --build build --config Release
+
+      - name: Stage files and deploy Qt dependencies
+        run: |
+          cmake --install build
+          windeployqt dist/scantailor-advanced.exe --no-translations --compiler-runtime
+
+      - name: Upload standalone build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScanTailor-Advanced-Windows-x64
+          path: dist/
