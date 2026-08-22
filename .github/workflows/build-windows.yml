@@ -32,6 +32,7 @@ jobs:
             mingw-w64-x86_64-qt5-base
             mingw-w64-x86_64-qt5-svg
             mingw-w64-x86_64-qt5-tools
+            mingw-w64-x86_64-qt5-translations
             mingw-w64-x86_64-boost
             mingw-w64-x86_64-libjpeg-turbo
             mingw-w64-x86_64-libpng
@@ -55,42 +56,51 @@ jobs:
 
       - name: Stage files and deploy runtime dependencies
         run: |
+          set +e
+
+          # 1. Run CMake installation to stage executable and translations
           cmake --install build
-          
-          # 1. Locate and run windeployqt-qt5
-          DEPLOY_QT=$(which windeployqt-qt5 windeployqt /mingw64/bin/windeployqt* 2>/dev/null | head -n 1)
-          if [ -n "$DEPLOY_QT" ]; then
-            "$DEPLOY_QT" dist/scantailor-advanced.exe --no-translations --compiler-runtime || true
-          fi
 
-          # 2. Ensure Qt platform and image plugins are present
-          QT_PLUGINS_DIR=$(qmake-qt5 -query QT_INSTALL_PLUGINS 2>/dev/null || echo "/mingw64/share/qt5/plugins")
-          if [ ! -d "$QT_PLUGINS_DIR" ]; then
-            QT_PLUGINS_DIR="/mingw64/plugins"
-          fi
-          if [ -d "$QT_PLUGINS_DIR" ]; then
-            mkdir -p dist/platforms dist/styles dist/imageformats dist/iconengines
-            cp -u "$QT_PLUGINS_DIR/platforms/qwindows.dll" dist/platforms/ 2>/dev/null || true
-            cp -u "$QT_PLUGINS_DIR/styles/"*.dll dist/styles/ 2>/dev/null || true
-            cp -u "$QT_PLUGINS_DIR/imageformats/"*.dll dist/imageformats/ 2>/dev/null || true
-            cp -u "$QT_PLUGINS_DIR/iconengines/"*.dll dist/iconengines/ 2>/dev/null || true
-          fi
+          # 2. Deploy Qt platform and graphic plugins
+          for pdir in /mingw64/share/qt5/plugins /mingw64/plugins; do
+            if [ -d "$pdir" ]; then
+              mkdir -p dist/platforms dist/styles dist/imageformats dist/iconengines
+              cp -f "$pdir/platforms/qwindows.dll" dist/platforms/ 2>/dev/null
+              cp -f "$pdir/styles/"*.dll dist/styles/ 2>/dev/null
+              cp -f "$pdir/imageformats/"*.dll dist/imageformats/ 2>/dev/null
+              cp -f "$pdir/iconengines/"*.dll dist/iconengines/ 2>/dev/null
+              break
+            fi
+          done
 
-          # 3. Recursively harvest all DLL dependencies (C/C++ runtime, Qt, TIFF, PNG, JPEG, zlib)
-          while true; do
-            added=0
+          # 3. Create portable qt.conf
+          cat << 'EOF' > dist/qt.conf
+          [Paths]
+          Prefix = .
+          Plugins = .
+          Translations = translations
+          EOF
+
+          # 4. Multi-pass recursive discovery for all transitive DLL dependencies
+          for pass in 1 2 3 4; do
             for bin in dist/*.exe dist/*.dll dist/*/*.dll; do
               [ -f "$bin" ] || continue
-              for dll in $(ldd "$bin" 2>/dev/null | grep -o '/mingw64/bin/[^ ]*'); do
+              for dll in $(ldd "$bin" 2>/dev/null | grep -io '/mingw64/bin/[^ ]*\.dll'); do
                 target="dist/$(basename "$dll")"
-                if [ ! -f "$target" ]; then
-                  cp -u "$dll" dist/
-                  added=$((added + 1))
+                if [ -f "$dll" ] && [ ! -f "$target" ]; then
+                  cp -f "$dll" dist/
                 fi
               done
             done
-            [ $added -eq 0 ] && break
           done
+
+          # 5. Final sanity check: verify primary executable exists
+          if [ ! -f "dist/scantailor-advanced.exe" ]; then
+            echo "Error: scantailor-advanced.exe was not found in dist/" >&2
+            exit 1
+          fi
+
+          exit 0
 
       - name: Upload standalone build artifact
         uses: actions/upload-artifact@v4
