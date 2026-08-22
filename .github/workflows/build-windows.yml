@@ -56,15 +56,34 @@ jobs:
       - name: Stage files and deploy runtime dependencies
         run: |
           cmake --install build
-          windeployqt dist/scantailor-advanced.exe --no-translations --compiler-runtime
           
-          # Recursively discover and bundle all direct and indirect third-party DLLs
+          # 1. Locate and run windeployqt-qt5
+          DEPLOY_QT=$(which windeployqt-qt5 windeployqt /mingw64/bin/windeployqt* 2>/dev/null | head -n 1)
+          if [ -n "$DEPLOY_QT" ]; then
+            "$DEPLOY_QT" dist/scantailor-advanced.exe --no-translations --compiler-runtime || true
+          fi
+
+          # 2. Ensure Qt platform and image plugins are present
+          QT_PLUGINS_DIR=$(qmake-qt5 -query QT_INSTALL_PLUGINS 2>/dev/null || echo "/mingw64/share/qt5/plugins")
+          if [ ! -d "$QT_PLUGINS_DIR" ]; then
+            QT_PLUGINS_DIR="/mingw64/plugins"
+          fi
+          if [ -d "$QT_PLUGINS_DIR" ]; then
+            mkdir -p dist/platforms dist/styles dist/imageformats dist/iconengines
+            cp -u "$QT_PLUGINS_DIR/platforms/qwindows.dll" dist/platforms/ 2>/dev/null || true
+            cp -u "$QT_PLUGINS_DIR/styles/"*.dll dist/styles/ 2>/dev/null || true
+            cp -u "$QT_PLUGINS_DIR/imageformats/"*.dll dist/imageformats/ 2>/dev/null || true
+            cp -u "$QT_PLUGINS_DIR/iconengines/"*.dll dist/iconengines/ 2>/dev/null || true
+          fi
+
+          # 3. Recursively harvest all DLL dependencies (C/C++ runtime, Qt, TIFF, PNG, JPEG, zlib)
           while true; do
             added=0
             for bin in dist/*.exe dist/*.dll dist/*/*.dll; do
               [ -f "$bin" ] || continue
               for dll in $(ldd "$bin" 2>/dev/null | grep -o '/mingw64/bin/[^ ]*'); do
-                if [ ! -f "dist/$(basename "$dll")" ]; then
+                target="dist/$(basename "$dll")"
+                if [ ! -f "$target" ]; then
                   cp -u "$dll" dist/
                   added=$((added + 1))
                 fi
